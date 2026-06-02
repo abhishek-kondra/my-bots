@@ -1,7 +1,8 @@
 {
     "telegram": {
         "bot_token": "8134933083:AAE7mUZsskolHhwFcUZ2gpUq8_906niWFIs",
-        "chat_id": "7396015146"
+        "chat_id": "7396015146",
+        "chat_id_2": "743777930"
     },
     "strategy": {
         "symbol": "XAUUSDT",
@@ -35,7 +36,7 @@
         "send_rejected_signals": false,
         "health_check_interval_minutes": 60,
         "max_slippage_pct": 0.05,
-        "auto_trade": true
+        "auto_trade": false
     },
     "binance": {
         "api_key": "HqmDjVSziGuHTeuoYSWDWeRtGcow4HOVA3SdtYWmMtHCkFk5RhJeAZG9NwzL6NEc",
