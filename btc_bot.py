@@ -192,21 +192,31 @@ signal.signal(signal.SIGINT,  handle_shutdown)
 # ══════════════════════════════════════════════════════════════════════
 
 class Telegram:
-    def __init__(self, token: str, chat_id: str):
-        self.token   = token
-        self.chat_id = str(chat_id)
-        self.url     = f"https://api.telegram.org/bot{token}/sendMessage"
+    def __init__(self, token: str, chat_id):
+        self.token = token
+        self.url   = f"https://api.telegram.org/bot{token}/sendMessage"
+        # Support single chat_id (str) or multiple (list)
+        if isinstance(chat_id, list):
+            self.chat_ids = [str(c) for c in chat_id if c]
+        else:
+            self.chat_ids = [str(chat_id)]
+        self.chat_id = self.chat_ids[0]  # backward compat
 
     def send(self, message: str, retries: int = 3) -> bool:
-        if len(message) > 4000:
-            for chunk in [message[i:i+4000] for i in range(0, len(message), 4000)]:
-                self._post(chunk, retries)
-            return True
-        return self._post(message, retries)
+        results = []
+        for cid in self.chat_ids:
+            if len(message) > 4000:
+                for chunk in [message[i:i+4000] for i in range(0, len(message), 4000)]:
+                    self._post(chunk, retries, cid)
+                results.append(True)
+            else:
+                results.append(self._post(message, retries, cid))
+        return all(results)
 
-    def _post(self, message: str, retries: int) -> bool:
+    def _post(self, message: str, retries: int, chat_id: str = None) -> bool:
+        cid = chat_id or self.chat_id
         payload = {
-            "chat_id": self.chat_id,
+            "chat_id": cid,
             "text": message,
             "parse_mode": "HTML",
             "disable_web_page_preview": True
@@ -238,7 +248,11 @@ class Telegram:
         return False
 
 
-telegram = Telegram(CFG["telegram"]["bot_token"], CFG["telegram"]["chat_id"])
+# Build recipient list — primary + any additional chat IDs
+_tg_ids = [CFG["telegram"]["chat_id"]]
+if CFG["telegram"].get("chat_id_2"):
+    _tg_ids.append(CFG["telegram"]["chat_id_2"])
+telegram = Telegram(CFG["telegram"]["bot_token"], _tg_ids)
 
 
 # ══════════════════════════════════════════════════════════════════════
