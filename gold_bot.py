@@ -68,7 +68,7 @@ DEFAULT_CONFIG = {
         "send_rejected_signals": False,
         "health_check_interval_minutes": 60,
         "max_slippage_pct": 0.05,
-        "auto_trade": True
+        "auto_trade": False
     },
     "binance": {
         "api_key": "HqmDjVSziGuHTeuoYSWDWeRtGcow4HOVA3SdtYWmMtHCkFk5RhJeAZG9NwzL6NEc",
@@ -131,23 +131,35 @@ signal.signal(signal.SIGINT,  handle_shutdown)
 
 class Telegram:
     def __init__(self, token, chat_id):
-        self.url     = f"https://api.telegram.org/bot{token}/sendMessage"
-        self.chat_id = str(chat_id)
-        self.token   = token
+        self.token    = token
+        self.url      = f"https://api.telegram.org/bot{token}/sendMessage"
+        # Support single chat_id (str) or multiple (list)
+        if isinstance(chat_id, list):
+            self.chat_ids = [str(c) for c in chat_id if c]
+        else:
+            self.chat_ids = [str(chat_id)]
+        self.chat_id = self.chat_ids[0]  # backward compat
 
     def send(self, msg, retries=3):
-        payload = {
-            "chat_id": self.chat_id, "text": msg[:4000],
-            "parse_mode": "HTML", "disable_web_page_preview": True
-        }
-        for i in range(1, retries+1):
-            try:
-                r = requests.post(self.url, json=payload, timeout=15)
-                if r.status_code == 200: return True
-                if r.status_code == 400: payload["parse_mode"] = None
-            except: pass
-            if i < retries: time.sleep(2*i)
-        return False
+        results = []
+        for cid in self.chat_ids:
+            payload = {
+                "chat_id": cid, "text": msg[:4000],
+                "parse_mode": "HTML", "disable_web_page_preview": True
+            }
+            sent = False
+            for i in range(1, retries+1):
+                try:
+                    r = requests.post(self.url, json=payload, timeout=15)
+                    if r.status_code == 200:
+                        sent = True
+                        break
+                    if r.status_code == 400:
+                        payload["parse_mode"] = None
+                except: pass
+                if i < retries: time.sleep(2*i)
+            results.append(sent)
+        return all(results)
 
     def test(self):
         try:
@@ -160,7 +172,11 @@ class Telegram:
         except: pass
         return False
 
-telegram = Telegram(CFG["telegram"]["bot_token"], CFG["telegram"]["chat_id"])
+# Build recipient list — primary + any additional chat IDs
+_tg_ids = [CFG["telegram"]["chat_id"]]
+if CFG["telegram"].get("chat_id_2"):
+    _tg_ids.append(CFG["telegram"]["chat_id_2"])
+telegram = Telegram(CFG["telegram"]["bot_token"], _tg_ids)
 
 
 # ══════════════════════════════════════════════════════════════════
