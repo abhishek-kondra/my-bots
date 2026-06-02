@@ -1,0 +1,47 @@
+{
+    "telegram": {
+        "bot_token": "8134933083:AAE7mUZsskolHhwFcUZ2gpUq8_906niWFIs",
+        "chat_id": "7396015146"
+    },
+    "strategy": {
+        "symbol": "XAUUSDT",
+        "timeframe": "5m",
+        "htf_timeframe": "15m",
+        "ema_period": 15,
+        "htf_ema_period": 50,
+        "atr_period": 14,
+        "rr_ratio": 3.0,
+        "risk_per_trade_pct": 2.0,
+        "account_balance": 1000.0,
+        "min_risk_dollars": 1.0
+    },
+    "filters": {
+        "session_filter_enabled": false,
+        "session_start_utc": 7,
+        "session_end_utc": 21,
+        "min_candle_body": 3.5,
+        "min_atr": 4.5,
+        "max_spread_pct": 0.05,
+        "cooldown_candles": 2
+    },
+    "risk_management": {
+        "max_daily_losses": 3,
+        "max_daily_loss_pct": 6.0,
+        "max_signals_per_day": 5
+    },
+    "bot": {
+        "check_interval_seconds": 20,
+        "candle_history_count": 100,
+        "send_rejected_signals": false,
+        "health_check_interval_minutes": 60,
+        "max_slippage_pct": 0.05,
+        "auto_trade": true
+    },
+    "binance": {
+        "api_key": "HqmDjVSziGuHTeuoYSWDWeRtGcow4HOVA3SdtYWmMtHCkFk5RhJeAZG9NwzL6NEc",
+        "api_secret": "X1B2HtpC4Yn1VmJXeyYVFBXZSsWPCb6MWuXzKnoC9jh69PSUcuYS9uMEiCki5We7",
+        "testnet": false,
+        "leverage": 1,
+        "margin_type": "ISOLATED"
+    }
+}
