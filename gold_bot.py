@@ -1,3 +1,4 @@
+from market_regime import analyze_regime
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════╗
