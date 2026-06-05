@@ -981,18 +981,40 @@ def health_check_loop(state: BotState, data_mgr: DataManager,
                 bal  = trader.get_balance() if trader else None
                 bal_str = f"${bal:,.2f}" if bal is not None else "N/A"
 
+                # Build today's signals list
+                trades_today = state.data.get("trades_today", [])
+                wins   = state.data.get("total_wins",   0)
+                losses = state.data.get("total_losses", 0)
+                rejected = state.data.get("signals_rejected", 0)
+
+                if trades_today:
+                    trade_lines = ""
+                    for sym_trades in [trades_today]:
+                        for t in (sym_trades if isinstance(sym_trades, list) else [sym_trades])[-5:]:
+                            if not isinstance(t, dict): continue
+                            arrow = "🟢" if t.get("dir") == "LONG" else "🔴"
+                            entry = t.get("entry", 0)
+                            symbol= t.get("symbol", "BTC")
+                            ttime = str(t.get("time", ""))[-8:-3] if t.get("time") else "?"
+                            trade_lines += f"\n  {arrow} {symbol} {t.get('dir','?')} @ ${entry:,.0f} ({ttime})"
+                else:
+                    trade_lines = "\n  None yet"
+
                 msg = (
                     f"💚 <b>BTC Futures Bot — Health</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━\n"
                     f"⏱ Uptime: {uptime_str}\n"
                     f"💎 Watching: {', '.join(symbols)}\n"
+                    f"🤖 Mode: {'AUTO-TRADE' if auto else 'Signal Only'}\n"
                     f"📡 Data: Binance Futures\n"
-                    f"🤖 Auto-trade: {'ON' if auto else 'OFF'}\n"
-                    f"💰 Balance: {bal_str}\n"
-                    f"📊 Signals: {state.data.get('signals_sent',0)} sent / "
-                    f"{state.data.get('orders_placed',0)} traded\n"
-                    f"📈 Record: {state.data['total_wins']}W / "
-                    f"{state.data['total_losses']}L ({state.win_rate:.1f}%)\n"
+                    f"━━━━━━ <b>Today</b> ━━━━━━\n"
+                    f"📨 Signals sent: {state.data.get('signals_sent', 0)}\n"
+                    f"❌ Rejected: {rejected}\n"
+                    f"🏆 Winners: {wins}   💔 Losers: {losses}   "
+                    f"WR: {state.win_rate:.1f}%\n"
+                    f"━━━━━━ <b>Open Signals</b> ━━━━━━"
+                    f"{trade_lines}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
                     f"🕐 {now.strftime('%Y-%m-%d %H:%M UTC')}"
                 )
                 telegram.send(msg)
