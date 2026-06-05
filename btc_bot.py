@@ -636,7 +636,9 @@ class BotState:
             "signals_slippage_rejected": 0,
             "last_signal_hash": None,
             "orders_placed": 0,
-            "orders_failed": 0
+            "orders_failed": 0,
+            "open_trades": [],
+            "completed_trades": []
         }
         self._load()
 
@@ -946,6 +948,130 @@ def format_alert(signal: dict, filters: list, atr: float,
 # HEALTH CHECK THREAD
 # ══════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════
+# TRADE OUTCOME TRACKER
+# ══════════════════════════════════════════════════════════════════════
+
+def check_1m_outcome_btc(data_mgr, symbol, trade):
+    """Disambiguate SL vs TP when both hit on same 5m candle using 1m data."""
+    try:
+        df1m = data_mgr.fetch(symbol, "1m", 100)
+        direction = trade["direction"]
+        sl, tp    = trade["sl"], trade["tp"]
+        entry_t   = pd.Timestamp(trade["time"])
+        if entry_t.tzinfo is None:
+            entry_t = entry_t.replace(tzinfo=timezone.utc)
+        df_after = df1m[df1m.index > entry_t]
+        for _, c in df_after.iterrows():
+            if direction == "LONG":
+                if c["High"] >= tp:  return "WIN",  tp
+                if c["Low"]  <= sl:  return "LOSS", sl
+            else:
+                if c["Low"]  <= tp:  return "WIN",  tp
+                if c["High"] >= sl:  return "LOSS", sl
+    except Exception as e:
+        log.warning(f"BTC 1m outcome check error: {e}")
+    return "UNKNOWN", None
+
+
+def trade_monitor_loop_btc(state: BotState, data_mgr: DataManager):
+    """
+    Monitors every open BTC trade for SL/TP outcome.
+    Runs from deployment onwards — persists across restarts via bot_state.json.
+    On SL+TP same-candle conflict: checks 1m, then marks UNKNOWN.
+    """
+    iv = cfg_get("bot", "check_interval_seconds", 20)
+    tf = cfg_get("strategy", "timeframe", "5m")
+    rr = cfg_get("strategy", "rr_ratio", 3.0)
+
+    while not shutdown_event.is_set():
+        try:
+            open_trades = state.data.get("open_trades", [])
+            if open_trades:
+                # Group by symbol for efficient fetching
+                symbols_needed = list(set(t.get("symbol", "BTCUSDT") for t in open_trades))
+                dfs = {}
+                for sym in symbols_needed:
+                    try:
+                        dfs[sym] = data_mgr.fetch(sym, tf, 500)
+                    except Exception as e:
+                        log.warning(f"TradeMonitor fetch {sym}: {e}")
+
+                for trade in list(open_trades):
+                    sym = trade.get("symbol", "BTCUSDT")
+                    df5 = dfs.get(sym)
+                    if df5 is None:
+                        continue
+                    try:
+                        entry_t = pd.Timestamp(trade["time"])
+                        if entry_t.tzinfo is None:
+                            entry_t = entry_t.replace(tzinfo=timezone.utc)
+                        df_after = df5[df5.index > entry_t]
+                        if len(df_after) == 0:
+                            continue
+
+                        direction = trade["direction"]
+                        sl, tp    = trade["sl"], trade["tp"]
+                        result    = None
+                        close_px  = None
+
+                        for _, c in df_after.iterrows():
+                            hit_tp = c["High"] >= tp if direction == "LONG" else c["Low"]  <= tp
+                            hit_sl = c["Low"]  <= sl if direction == "LONG" else c["High"] >= sl
+
+                            if hit_tp and hit_sl:
+                                result, close_px = check_1m_outcome_btc(data_mgr, sym, trade)
+                                break
+                            elif hit_tp:
+                                result, close_px = "WIN",  tp;  break
+                            elif hit_sl:
+                                result, close_px = "LOSS", sl;  break
+
+                        if result:
+                            state.data["open_trades"] = [
+                                t for t in state.data["open_trades"]
+                                if t.get("signal_hash") != trade.get("signal_hash")
+                            ]
+                            done = dict(trade)
+                            done.update({
+                                "result":      result,
+                                "close_price": close_px,
+                                "close_time":  datetime.now(timezone.utc).isoformat()
+                            })
+                            state.data.setdefault("completed_trades", []).append(done)
+
+                            if result == "WIN":
+                                state.data["total_wins"]   = state.data.get("total_wins",   0) + 1
+                            elif result == "LOSS":
+                                state.data["total_losses"] = state.data.get("total_losses", 0) + 1
+
+                            emoji = "🏆" if result == "WIN" else ("💔" if result == "LOSS" else "❓")
+                            arrow = "⬆️" if direction == "LONG" else "⬇️"
+                            close_str = f"${close_px:,.0f}" if close_px else "N/A"
+                            telegram.send(
+                                f"{emoji} <b>Trade Closed — {sym} {direction}</b> {arrow}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"Result:  <b>{result}</b>\n"
+                                f"Entry:   ${trade['entry']:,.0f}\n"
+                                f"{'TP hit' if result=='WIN' else 'SL hit' if result=='LOSS' else 'Checked'}: {close_str}\n"
+                                f"RR:      1:{rr:.0f}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📈 Record: {state.data['total_wins']}W / "
+                                f"{state.data['total_losses']}L "
+                                f"({state.win_rate:.1f}%)"
+                            )
+                            state.save()
+                            log.info(f"✅ Trade closed: {result} — {sym} {direction} @ {trade['entry']}")
+
+                    except Exception as e:
+                        log.error(f"TradeMonitor per-trade error: {e}", exc_info=True)
+
+        except Exception as e:
+            log.error(f"TradeMonitor loop error: {e}")
+
+        shutdown_event.wait(iv)
+
+
 def health_check_loop(state: BotState, data_mgr: DataManager,
                       trader, symbols: list):
     interval         = cfg_get("bot", "health_check_interval_minutes", 60) * 60
@@ -981,24 +1107,40 @@ def health_check_loop(state: BotState, data_mgr: DataManager,
                 bal  = trader.get_balance() if trader else None
                 bal_str = f"${bal:,.2f}" if bal is not None else "N/A"
 
-                # Build today's signals list
-                trades_today = state.data.get("trades_today", [])
-                wins   = state.data.get("total_wins",   0)
-                losses = state.data.get("total_losses", 0)
+                wins     = state.data.get("total_wins",   0)
+                losses   = state.data.get("total_losses", 0)
                 rejected = state.data.get("signals_rejected", 0)
 
-                if trades_today:
-                    trade_lines = ""
-                    for sym_trades in [trades_today]:
-                        for t in (sym_trades if isinstance(sym_trades, list) else [sym_trades])[-5:]:
-                            if not isinstance(t, dict): continue
-                            arrow = "🟢" if t.get("dir") == "LONG" else "🔴"
-                            entry = t.get("entry", 0)
-                            symbol= t.get("symbol", "BTC")
-                            ttime = str(t.get("time", ""))[-8:-3] if t.get("time") else "?"
-                            trade_lines += f"\n  {arrow} {symbol} {t.get('dir','?')} @ ${entry:,.0f} ({ttime})"
+                open_trades = state.data.get("open_trades", [])
+                if open_trades:
+                    open_lines = ""
+                    for t in open_trades[-5:]:
+                        arrow = "🟢" if t.get("direction") == "LONG" else "🔴"
+                        entry = t.get("entry", 0)
+                        ttime = str(t.get("time", ""))
+                        ttime = ttime[11:16] if len(ttime) > 16 else ttime[-5:]
+                        open_lines += (
+                            f"\n  {arrow} {t.get('symbol','BTC')} {t.get('direction','?')}"
+                            f" @ ${entry:,.0f}"
+                            f" | SL ${t.get('sl',0):,.0f} | TP ${t.get('tp',0):,.0f}"
+                            f" ({ttime})"
+                        )
                 else:
-                    trade_lines = "\n  None yet"
+                    open_lines = "\n  None"
+
+                completed = state.data.get("completed_trades", [])
+                recent_done = completed[-3:] if completed else []
+                if recent_done:
+                    done_lines = ""
+                    for t in recent_done:
+                        res = t.get("result", "?")
+                        emoji_r = "🏆" if res == "WIN" else ("💔" if res == "LOSS" else "❓")
+                        done_lines += (
+                            f"\n  {emoji_r} {t.get('symbol','BTC')} {t.get('direction','?')}"
+                            f" @ ${t.get('entry',0):,.0f} → {res}"
+                        )
+                else:
+                    done_lines = "\n  None yet"
 
                 msg = (
                     f"💚 <b>BTC Futures Bot — Health</b>\n"
@@ -1007,13 +1149,15 @@ def health_check_loop(state: BotState, data_mgr: DataManager,
                     f"💎 Watching: {', '.join(symbols)}\n"
                     f"🤖 Mode: {'AUTO-TRADE' if auto else 'Signal Only'}\n"
                     f"📡 Data: Binance Futures\n"
-                    f"━━━━━━ <b>Today</b> ━━━━━━\n"
-                    f"📨 Signals sent: {state.data.get('signals_sent', 0)}\n"
-                    f"❌ Rejected: {rejected}\n"
-                    f"🏆 Winners: {wins}   💔 Losers: {losses}   "
+                    f"━━━━━━ <b>Stats (All-time)</b> ━━━━━━\n"
+                    f"📨 Signals: {state.data.get('signals_sent', 0)} sent | "
+                    f"{rejected} rejected\n"
+                    f"🏆 Winners: {wins}  💔 Losers: {losses}  "
                     f"WR: {state.win_rate:.1f}%\n"
-                    f"━━━━━━ <b>Open Signals</b> ━━━━━━"
-                    f"{trade_lines}\n"
+                    f"━━━━━━ <b>Open Trades ({len(open_trades)})</b> ━━━━━━"
+                    f"{open_lines}\n"
+                    f"━━━━━━ <b>Recent Results</b> ━━━━━━"
+                    f"{done_lines}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━\n"
                     f"🕐 {now.strftime('%Y-%m-%d %H:%M UTC')}"
                 )
@@ -1122,6 +1266,12 @@ def run():
         args=(state, data_mgr, trader, symbols),
         daemon=True, name="HealthCheck"
     ).start()
+    threading.Thread(
+        target=trade_monitor_loop_btc,
+        args=(state, data_mgr),
+        daemon=True, name="TradeMonitor"
+    ).start()
+    log.info("✅ Trade outcome monitor started")
 
     # ── Startup Telegram alert ────────────────────────────────────────
     sym_str = " + ".join(symbols)
@@ -1274,6 +1424,19 @@ def run():
                         "tp":          sig["tp"],
                         "slip_pct":    slip_pct,
                         "auto_traded": bool(order_result and order_result.get("success"))
+                    })
+
+                    # Register trade for outcome tracking
+                    import hashlib as _hl
+                    _hash = _hl.md5(f"{symbol}{sig['direction']}{sig['time']}".encode()).hexdigest()[:12]
+                    state.data.setdefault("open_trades", []).append({
+                        "signal_hash": _hash,
+                        "direction":   sig["direction"],
+                        "entry":       live_price,
+                        "sl":          sig["sl"],
+                        "tp":          sig["tp"],
+                        "time":        sig["time"],
+                        "symbol":      symbol,
                     })
 
                 except Exception as e:
