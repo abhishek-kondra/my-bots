@@ -780,18 +780,38 @@ def health_loop(state, dm, trader=None):
                 bal_str  = f"${trader.get_balance():,.2f}" if trader else "N/A"
                 auto     = cfg_get("bot", "auto_trade", False)
 
+                # Build today's signals list
+                trades_today = state.data.get("trades_today", [])
+                wins  = state.data.get("total_wins",   0)
+                losses= state.data.get("total_losses", 0)
+                rejected = state.data.get("signals_rejected", 0)
+
+                # Open trades = today's signals (signal-only: all sent signals are "open")
+                if trades_today:
+                    trade_lines = ""
+                    for t in trades_today[-5:]:  # show last 5 max
+                        arrow = "🟢" if t.get("dir") == "LONG" else "🔴"
+                        entry = t.get("entry", 0)
+                        ttime = str(t.get("time", ""))[-8:-3] if t.get("time") else "?"
+                        trade_lines += f"\n  {arrow} {t.get('dir','?')} @ ${entry:,.2f} ({ttime})"
+                else:
+                    trade_lines = "\n  None yet"
+
                 telegram.send(
                     f"💛 <b>Gold Bot Health</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━\n"
                     f"⏱ Uptime: {uptime_str}\n"
-                    f"💛 XAUUSDT live: {live_str}\n"
-                    f"💰 Balance: {bal_str}\n"
-                    f"🤖 Auto-trade: {'ON' if auto else 'OFF'}\n"
+                    f"💛 XAUUSDT: {live_str}\n"
+                    f"🤖 Mode: {'AUTO-TRADE' if auto else 'Signal Only'}\n"
                     f"📡 {dm.usage_str}\n"
-                    f"📊 {state.data.get('signals_sent',0)} sent / "
-                    f"{state.data.get('orders_placed',0)} traded\n"
-                    f"📈 {state.data['total_wins']}W/"
-                    f"{state.data['total_losses']}L ({state.win_rate:.1f}%)\n"
+                    f"━━━━━━ <b>Today</b> ━━━━━━\n"
+                    f"📨 Signals sent: {state.data.get('signals_sent', 0)}\n"
+                    f"❌ Rejected: {rejected}\n"
+                    f"🏆 Winners: {wins}   💔 Losers: {losses}   "
+                    f"WR: {state.win_rate:.1f}%\n"
+                    f"━━━━━━ <b>Open Signals</b> ━━━━━━"
+                    f"{trade_lines}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
                     f"🕐 {now.strftime('%Y-%m-%d %H:%M UTC')}"
                 )
                 state.data["last_health_check"] = now.isoformat()
