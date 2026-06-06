@@ -1165,20 +1165,85 @@ def health_check_loop(state: BotState, data_mgr: DataManager,
                 state.data["last_health_check"] = now.isoformat()
                 state.save()
 
-            # Daily summary
+            # Daily summary at 00:05 UTC
             today = now.strftime("%Y-%m-%d")
             if now.hour == 0 and now.minute >= 5 and last_daily != today:
-                trades = state.data.get("trades_today", [])
+                trades_today  = state.data.get("trades_today", [])
+                completed     = state.data.get("completed_trades", [])
+                open_trades   = state.data.get("open_trades", [])
+                yesterday     = (now - __import__("datetime").timedelta(days=1)).strftime("%Y-%m-%d")
+
+                # Today's (yesterday UTC) completed trades
+                today_done = [
+                    t for t in completed
+                    if str(t.get("close_time", "")).startswith(yesterday)
+                    or str(t.get("time", "")).startswith(yesterday)
+                ]
+                today_wins   = sum(1 for t in today_done if t.get("result") == "WIN")
+                today_losses = sum(1 for t in today_done if t.get("result") == "LOSS")
+                today_unk    = sum(1 for t in today_done if t.get("result") == "UNKNOWN")
+                today_wr     = (today_wins / max(today_wins + today_losses, 1)) * 100
+
+                # Build trade log
+                if today_done:
+                    trade_log = ""
+                    for t in today_done[-8:]:
+                        res     = t.get("result", "?")
+                        emoji_r = "🏆" if res == "WIN" else ("💔" if res == "LOSS" else "❓")
+                        sym     = t.get("symbol", "BTCUSDT")
+                        ttime   = str(t.get("time", ""))
+                        ttime   = ttime[11:16] if len(ttime) > 16 else ttime[-5:]
+                        trade_log += (
+                            f"\n  {emoji_r} {sym} {t.get('direction','?')} @ "
+                            f"${t.get('entry',0):,.0f} → {res} ({ttime})"
+                        )
+                else:
+                    trade_log = "\n  No completed trades"
+
+                # Still open trades
+                if open_trades:
+                    open_log = ""
+                    for t in open_trades[-5:]:
+                        arrow   = "🟢" if t.get("direction") == "LONG" else "🔴"
+                        sym     = t.get("symbol", "BTCUSDT")
+                        ttime   = str(t.get("time", ""))
+                        ttime   = ttime[11:16] if len(ttime) > 16 else ttime[-5:]
+                        open_log += (
+                            f"\n  {arrow} {sym} {t.get('direction','?')} @ "
+                            f"${t.get('entry',0):,.0f} | TP ${t.get('tp',0):,.0f}"
+                            f" | SL ${t.get('sl',0):,.0f} ({ttime})"
+                        )
+                else:
+                    open_log = "\n  None"
+
+                # Fetch live price
+                try:
+                    live_px  = data_mgr.fetch_live_price(symbols[0])
+                    live_str = f"${live_px:,.0f}"
+                except Exception:
+                    live_str = "N/A"
+
                 msg = (
-                    f"📋 <b>BTC Daily Summary — {today}</b>\n"
+                    f"📋 <b>BTC Daily Summary — {yesterday}</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"Signals sent: {len(trades)}\n"
-                    f"Orders placed: {state.data.get('orders_placed', 0)}\n"
-                    f"Daily losses: {state.data['daily_losses']}\n"
-                    f"All-time: {state.data['total_wins']}W / "
-                    f"{state.data['total_losses']}L ({state.win_rate:.1f}%)\n"
+                    f"💎 BTCUSDT close: {live_str}\n"
+                    f"━━━━━━ <b>Day's Activity</b> ━━━━━━\n"
+                    f"📨 Signals sent:  {len(trades_today)}\n"
+                    f"❌ Rejected:      {state.data.get('signals_rejected', 0)}\n"
+                    f"━━━━━━ <b>Day's Results</b> ━━━━━━\n"
+                    f"🏆 Winners:  {today_wins}   "
+                    f"💔 Losers: {today_losses}   "
+                    f"❓ Unknown: {today_unk}\n"
+                    f"📊 Day WR: {today_wr:.1f}%"
+                    f"{trade_log}\n"
+                    f"━━━━━━ <b>Still Open ({len(open_trades)})</b> ━━━━━━"
+                    f"{open_log}\n"
+                    f"━━━━━━ <b>All-Time Record</b> ━━━━━━\n"
+                    f"🏆 {state.data['total_wins']}W  "
+                    f"💔 {state.data['total_losses']}L  "
+                    f"WR: {state.win_rate:.1f}%\n"
                     f"━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"24/7 monitoring continues."
+                    f"📡 Binance Futures | 00:00 UTC reset"
                 )
                 telegram.send(msg)
                 last_daily = today
